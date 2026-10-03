@@ -18,9 +18,9 @@ class overallEnv(gym.Env):
                  user_equipment_nums : int = 3, 
                  layer_nums : int = 2, 
                  num_elements_side : int = 3, #--> total_elements_side
-                 FA_region_size_factor: float = 2.0, #A = FA_region_size_factor * self.light_lambda
-                 num_posible_position_horizontal : int = 4,
-                 num_posible_position_vertical : int = 5,
+                 FA_region_size_factor: float = 2.0, #A = FA_region_size_factor * self.light_lambda - 4.0
+                 num_posible_position_horizontal: int = 4,
+                 num_posible_position_vertical: int = 5, 
                  frequency_hz : float = 28e9,
                  bandwidth_hz : float = 10e6,
                  area_size : float = 200.0,
@@ -93,20 +93,21 @@ class overallEnv(gym.Env):
         
         #Action space : 
         self.power_action_dim = (self.ap_nums * self.user_equipment_nums) # Power allocation p_{l,k}
-        # self.phase_action_dim = (self.ap_nums * self.layer_nums * self.total_element_per_layers) # SIM phase shifts phi_{l,m,n}
-        self.fa_action_dim = (self.ap_nums * self.antenna_nums) # FA positions (x_{l,u}, y_{l,u})
-        self.action_dim = (self.power_action_dim + self.fa_action_dim)
+        self.phase_action_dim = (self.ap_nums * self.layer_nums * self.total_element_per_layers) # SIM phase shifts phi_{l,m,n}
+        # self.fa_action_dim = (2 * self.ap_nums * self.antenna_nums) # FA positions (x_{l,u}, y_{l,u})
+        self.fa_action_dim = (self.ap_nums * self.antenna_nums) #1 action value to choose the port position
+        self.action_dim = (self.power_action_dim + self.phase_action_dim + self.fa_action_dim)
         
         self.power_action_start = 0
         self.power_action_end = self.power_action_dim
 
-        # self.phase_action_start = self.power_action_end
-        # self.phase_action_end = (
-        #     self.phase_action_start
-        #     + self.phase_action_dim
-        # )
+        self.phase_action_start = self.power_action_end
+        self.phase_action_end = (
+            self.phase_action_start
+            + self.phase_action_dim
+        )
 
-        self.fa_action_start = self.power_action_end
+        self.fa_action_start = self.phase_action_end
         self.fa_action_end = (
             self.fa_action_start
             + self.fa_action_dim
@@ -128,19 +129,16 @@ class overallEnv(gym.Env):
         # Movement region for FA
         self.FA_region_size_factor = FA_region_size_factor 
         self.FA_region_size = self.FA_region_size_factor * self.light_lambda # (x, y) in (-FA_region_size / 2, FA_region_size)
-        self.FA_min_distance = 0.5 * self.light_lambda #Minimum Distance between pair of FA (D)
-        # Generate all available FA ports
-        self.available_fa_ports = (self.generate_available_fa_ports())
-        self.num_available_fa_ports = (self.available_fa_ports.shape[0])
-        
-        # Initial FA positions
-        base_fa_position = (self.initialize_fa_positions())
+        self.FA_min_distance = 0.5 * self.light_lambda # Minimum Distance between pair of FA (D)
+        self.available_fa_ports = (self.generate_available_fa_ports()) # Available port for FAs
+        self.num_available_fa_ports = (self.available_fa_ports.shape[0]) # The number of available FA position
+        base_fa_position = self.initialize_fa_positions() #(L, U, 2)
         self.initial_FA_position = np.repeat(
             base_fa_position[None, :, :],
             self.ap_nums,
             axis=0
-        )
-        self.FA_position = (self.initial_FA_position.copy()) 
+        ) #(L, 2, U)
+        self.FA_position = self.initial_FA_position.copy() 
         
         #Fading channels - initialized in reset()
         self.g_in_user = None 
@@ -182,7 +180,7 @@ class overallEnv(gym.Env):
         if Nx == 1:
             x_coordinates = np.array([0.0])
         else:
-            x_coordinates = np.linspace(-A / 2.0, A / 2.0, Nx)
+            x_coordinates = np.linspace(-A / 2.0, A / 2.0,Nx)
 
         # Vertical coordinates
         if Ny == 1:
@@ -192,7 +190,7 @@ class overallEnv(gym.Env):
 
         x_grid, y_grid = np.meshgrid(x_coordinates, y_coordinates, indexing="xy")
         ports = np.stack([x_grid.ravel(), y_grid.ravel()], axis=1)
-        return ports.astype(np.float64)
+        return ports.astype(np.float64) # self.available_fa_ports.shape (N_x N_y, 2)
     
     def initialize_fa_positions(self):
         U = self.antenna_nums
@@ -205,7 +203,7 @@ class overallEnv(gym.Env):
 
         # selected_positions: (U, 2)
         # Need return shape: (2, U)
-        return selected_positions.T.copy()
+        return selected_positions.T.copy()   
     
     def check_fa_feasibility(self, fa_positions: np.ndarray):
         L = self.ap_nums
@@ -441,103 +439,53 @@ class overallEnv(gym.Env):
             allocated_powers[l] = (self.ap_transmit_power_watts * power_l)
 
         #Sim phase action
-        # phase_action = action[self.phase_action_start:self.phase_action_end]
-        # phase_action = phase_action.reshape(L, M, N)
-        # phase_shift_matrix = (np.pi * (phase_action + 1.0)) # Map [-1, 1] -> [0, 2*pi)
-        # phase_shift_matrix = np.mod(phase_shift_matrix, 2.0 * np.pi)
+        phase_action = action[self.phase_action_start:self.phase_action_end]
+        phase_action = phase_action.reshape(L, M, N)
+        phase_shift_matrix = (np.pi * (phase_action + 1.0)) # Map [-1, 1] -> [0, 2*pi)
+        phase_shift_matrix = np.mod(phase_shift_matrix, 2.0 * np.pi)
 
         #Fa position action
         fa_action = action[self.fa_action_start:self.fa_action_end]
-
-        # One scalar per FA
         fa_action = fa_action.reshape(L, U)
         num_ports = self.num_available_fa_ports
-
-        # Map [-1, 1] -> [0, num_ports - 1]
+        
+        #Map [-1, 1] --> [0, num_ports - 1]
         normalized = (fa_action + 1.0) / 2.0
         port_indices = np.rint(normalized * (num_ports - 1)).astype(np.int64)
         port_indices = np.clip(port_indices, 0, num_ports - 1)
 
-        # FA positions
+        # FA positions q = round [(a + 1) / 2 * (Np - 1)]
         fa_positions = np.zeros((L, 2, U), dtype=np.float64)
-
         for l in range(L):
             for u in range(U):
                 port_idx = port_indices[l, u]
                 fa_positions[l, :, u] = (self.available_fa_ports[port_idx])
 
-        return (allocated_powers, fa_positions)
+        return (allocated_powers, phase_shift_matrix, fa_positions)
 
     def step(self, action: np.ndarray):
         self.current_step += 1
-        (
-            self.allocated_powers,
-            proposed_fa_positions
-        ) = self._decode_action(action)
-
-        self.consumed_power_per_ap = np.sum(
-            self.allocated_powers,
-            axis=1
-        )
-
-        self.consumed_power = np.sum(
-            self.consumed_power_per_ap
-        )
-
-        (
-            self.fa_feasible,
-            self.fa_violation_count,
-            self.fa_min_pair_distance
-        ) = self.check_fa_feasibility(
-            proposed_fa_positions
-        )
-
+        (self.allocated_powers, self.phase_shift_matrix, proposed_fa_positions) = self._decode_action(action)
+        self.consumed_power_per_ap = np.sum(self.allocated_powers,axis=1)
+        self.consumed_power = np.sum(self.consumed_power_per_ap)
+        (self.fa_feasible, self.fa_violation_count, self.fa_min_pair_distance) = self.check_fa_feasibility(proposed_fa_positions)
         if self.fa_feasible:
-            self.FA_position = (
-                proposed_fa_positions
-            )
-        self.H_l = (
-            self.calculate_path_between_ap_sim(
-                self.FA_position,
-                self.element_position_matrix
-            )
-        )
-
-        # Equivalent channel
+            self.FA_position = proposed_fa_positions
+        self.H_l = (self.calculate_path_between_ap_sim(self.FA_position, self.element_position_matrix)) #FA position change
+        self.B_l = (self.calculate_sim_transfer_matrix(self.phase_shift_matrix)) #phase-shift change
         self.h_user = self.get_channel()
-
-        observation = self._get_obs(
-            h_user=self.h_user
-        )
-
-        (
-            self.user_sinr,
-            self.user_data_rates,
-            total_data_rates
-        ) = self._calculate_rates()
-
-        # Hard FA constraint
+        observation = self._get_obs(h_user=self.h_user)
+        (self.user_sinr, self.user_data_rates, total_data_rates) = self._calculate_rates()
+        #Condition about FA position
         if self.fa_feasible:
-            self.reward = float(
-                total_data_rates
-            )
+            self.reward = float(total_data_rates)
         else:
             self.reward = 0.0
-
         terminated = False
-        truncated = (
-            self.current_step >= self.max_episode_steps
-        )
-
-        info = self._get_info()
-
-        return (
-            observation,
-            self.reward,
-            terminated,
-            truncated,
-            info
-        )
+        truncated = self.current_step >= self.max_episode_steps
+        
+        info = self._get_info()# print("info", info)
+        return observation, self.reward, terminated, truncated, info
     
     def reset(self, seed: Optional[int] = None, options: Optional[dict] = None):
         super().reset(seed=seed)

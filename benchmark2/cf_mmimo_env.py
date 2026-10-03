@@ -13,12 +13,15 @@ from utils import (
 class overallEnv(gym.Env):
     #Class that simulates the downlink of a system with FA-SIM in cell-free massive MIMO system
     def __init__(self,
+                 fixed_fa_seed: int = 42,
                  ap_nums: int = 2,
                  antenna_nums : int = 3,
                  user_equipment_nums : int = 3, 
                  layer_nums : int = 2, 
                  num_elements_side : int = 3, #--> total_elements_side
                  FA_region_size_factor: float = 4.0, #A = FA_region_size_factor * self.light_lambda
+                 num_posible_position_horizontal : int = 4,
+                 num_posible_position_vertical : int = 5,
                  frequency_hz : float = 28e9,
                  bandwidth_hz : float = 10e6,
                  area_size : float = 200.0,
@@ -33,12 +36,15 @@ class overallEnv(gym.Env):
                  receive_path_num: int = 4, 
                  rician_factor_db: float = 10.0, #?
                  max_episode_steps: int = 10):
+        self.fixed_fa_seed = fixed_fa_seed
         self.ap_nums = ap_nums
         self.antenna_nums = antenna_nums
         self.user_equipment_nums = user_equipment_nums
         self.layer_nums = layer_nums
         self.num_elements_side = num_elements_side
         self.total_element_per_layers = self.num_elements_side ** 2
+        self.num_posible_position_horizontal = num_posible_position_horizontal
+        self.num_posible_position_vertical = num_posible_position_vertical
         self.frequency_hz = frequency_hz
         self.bandwidth_hz = bandwidth_hz
         self.area_size = area_size
@@ -128,12 +134,30 @@ class overallEnv(gym.Env):
 
         # Fixed inter-antenna spacing = lambda/2
         self.FA_min_distance = (self.light_lambda / 2.0)
-        base_fa_position = (self.initialize_fa_positions())
+        # Generate all available FA ports
+        self.available_fa_ports = (self.generate_available_fa_ports())
+        self.num_available_fa_ports = (self.available_fa_ports.shape[0])
 
-        # Same fixed antenna geometry at every AP
-        self.initial_FA_position = np.repeat( base_fa_position[None, :, :], self.ap_nums, axis=0)
-        self.FA_position = ( self.initial_FA_position.copy())
-        
+        self.fixed_fa_rng = (np.random.default_rng(self.fixed_fa_seed))
+        (
+            self.FA_position,
+            self.FA_port_indices
+        ) = self.initialize_random_fixed_fa_positions(
+            self.fixed_fa_rng
+        )
+
+        # Save fixed geometry
+        self.initial_FA_position = (self.FA_position.copy())
+        self.initial_FA_port_indices = (self.FA_port_indices.copy())
+
+        # Check geometry once
+        (
+            self.fa_feasible,
+            self.fa_violation_count,
+            self.fa_min_pair_distance
+        ) = self.check_fa_feasibility(
+            self.FA_position
+        )
         #Fading channels - initialized in reset()
         self.g_in_user = None 
 
@@ -164,32 +188,65 @@ class overallEnv(gym.Env):
         self.H_l = self.calculate_path_between_ap_sim(self.FA_position, self.element_position_matrix)
         self.w_t, self.corr_t = self._calculate_transmission_matrix()
         self.h_sim_ue = self._generate_sim_user_channel()
+        
+    def generate_available_fa_ports(self):
+        A = self.FA_region_size
+        Nx = self.num_posible_position_horizontal
+        Ny = self.num_posible_position_vertical
+
+        # Horizontal coordinates
+        if Nx == 1:
+            x_coordinates = np.array([0.0])
+        else:
+            x_coordinates = np.linspace(-A / 2.0, A / 2.0, Nx)
+            
+        # Vertical coordinates
+        if Ny == 1:
+            y_coordinates = np.array([0.0])
+        else:
+            y_coordinates = np.linspace(-A / 2.0, A / 2.0, Ny)
+
+        x_grid, y_grid = np.meshgrid(x_coordinates, y_coordinates, indexing="xy")
+        ports = np.stack([x_grid.ravel(), y_grid.ravel()], axis=1)
+        return ports.astype(np.float64)
     
-    def initialize_fa_positions(self):
+    def initialize_random_fixed_fa_positions(self, rng: np.random.Generator):
+        L = self.ap_nums
         U = self.antenna_nums
-        spacing = self.light_lambda / 2.0
 
-        # Number of grid points per side
-        n_side = int(np.ceil(np.sqrt(U)))
+        ports = self.available_fa_ports
+        num_ports = ports.shape[0]
 
-        # Required square width
-        required_width = (n_side - 1) * spacing
+        fa_positions = np.zeros((L, 2, U), dtype=np.float64)
+        port_indices = np.zeros((L, U), dtype=np.int64)
 
-        # Center the grid around (0,0)
-        coordinates = (np.arange(n_side) - (n_side - 1) / 2.0) * spacing
-        x_grid, y_grid = np.meshgrid(
-            coordinates,
-            coordinates,
-            indexing="xy"
-        )
+        max_trials = 10000
+        tolerance = 1e-9 * self.light_lambda
 
-        positions = np.stack([x_grid.ravel(), y_grid.ravel()], axis=1)
+        for l in range(L):
+            found_valid_configuration = False
+            for _ in range(max_trials):
+                # Randomly select U different ports
+                selected_indices = rng.choice( num_ports, size=U, replace=False)
+                selected_positions = ( ports[selected_indices])  # (U, 2)
+                feasible = True
 
-        # Keep only U antennas
-        positions = positions[:U]
+                for u in range(U):
+                    for u_prime in range(u + 1, U):
+                        distance = np.linalg.norm( selected_positions[u] - selected_positions[u_prime])
 
-        # Shape: (2, U)
-        return positions.T.astype(np.float64)   
+                        if distance < ( self.FA_min_distance - tolerance):
+                            feasible = False
+                            break
+                    if not feasible:
+                        break
+                if feasible:
+                    port_indices[l] = (selected_indices)
+                    fa_positions[l] = (selected_positions.T)
+                    found_valid_configuration = True
+                    break
+
+        return (fa_positions, port_indices)
     
     def check_fa_feasibility(self, fa_positions: np.ndarray):
         L = self.ap_nums
@@ -386,12 +443,24 @@ class overallEnv(gym.Env):
             "current_step": self.current_step,
             "user_sinr": self.user_sinr,
             "user_data_rates": self.user_data_rates,
-            "sum_rate":(np.sum(self.user_data_rates) if self.user_data_rates is not None else None),
-            "consumed_power_watts": self.consumed_power,
-            "fa_feasible": self.fa_feasible,
-            "fa_violation_count": self.fa_violation_count,
-            "fa_min_pair_distance": self.fa_min_pair_distance,
-        }  
+            "sum_rate": (
+                np.sum(self.user_data_rates)
+                if self.user_data_rates is not None
+                else None
+            ),
+            "consumed_power_watts":
+                self.consumed_power,
+            "fa_feasible":
+                self.fa_feasible,
+            "fa_violation_count":
+                self.fa_violation_count,
+            "fa_min_pair_distance":
+                self.fa_min_pair_distance,
+            "fa_port_indices":
+                self.FA_port_indices.copy(),
+            "fa_positions":
+                self.FA_position.copy(),
+        } 
             
     def _get_obs(self, h_user: np.ndarray):
         obs = np.concatenate([
@@ -405,126 +474,93 @@ class overallEnv(gym.Env):
         K = self.user_equipment_nums
         M = self.layer_nums
         N = self.total_element_per_layers
-        U = self.antenna_nums
-        action = np.asarray(action, dtype=np.float32) # Basic check
-        action = np.clip(action, -1.0, 1.0) # Safety clipping
-        
-        # power action
+
+        action = np.asarray(action, dtype=np.float32)
+        action = np.clip(action, -1.0,1.0)
+
+        # Power allocation
         power_action = action[self.power_action_start:self.power_action_end]
-        power_action = power_action.reshape(L,K)
-        power_fraction = (power_action + 1.0) / 2.0 # Map [-1, 1] -> [0, 1]
+        power_action = power_action.reshape(L, K)
+
+        # [-1, 1] -> [0, 1]
+        power_fraction = (power_action + 1.0) / 2.0
         allocated_powers = np.zeros((L, K), dtype=np.float64)
 
         for l in range(L):
-            power_l = power_fraction[l].copy()
+            power_l = (power_fraction[l].copy())
             total_fraction = np.sum(power_l)
 
+            # Enforce:
+            # sum_k p_lk <= P_l_max
             if total_fraction > 1.0:
-                power_l = (power_l /total_fraction)
-
+                power_l = ( power_l/ total_fraction )
             allocated_powers[l] = (self.ap_transmit_power_watts * power_l)
 
-        #Sim phase action
-        phase_action = action[self.phase_action_start:self.phase_action_end]
-        phase_action = phase_action.reshape(L, M, N)
-        phase_shift_matrix = (np.pi * (phase_action + 1.0)) # Map [-1, 1] -> [0, 2*pi)
-        phase_shift_matrix = np.mod(phase_shift_matrix, 2.0 * np.pi)
+        # SIM phase shifts
+        phase_action = action[self.phase_action_start: self.phase_action_end]
+        phase_action = phase_action.reshape( L, M, N)
 
-        #Fa position action
-        # fa_action = action[self.fa_action_start:self.fa_action_end]
-        # fa_action = fa_action.reshape(L, 2, U)
-        # fa_positions = (self.FA_region_size / 2.0) * fa_action # Map [-1,1] -> [-FA_region_size/2, FA_region_size/2]
+        # [-1, 1] -> [0, 2*pi]
+        phase_shift_matrix = (np.pi * (phase_action + 1.0))
+        phase_shift_matrix = np.mod(phase_shift_matrix,2.0 * np.pi)
 
         return (allocated_powers, phase_shift_matrix)
 
     def step(self, action: np.ndarray):
         self.current_step += 1
+        # Decode power + phase only
+        (self.allocated_powers,self.phase_shift_matrix) = self._decode_action(action)
 
-        # Decode only power and SIM phase
-        (
-            self.allocated_powers,
-            self.phase_shift_matrix
-        ) = self._decode_action(action)
+        # Power consumption
+        self.consumed_power_per_ap = np.sum(self.allocated_powers, axis=1)
+        self.consumed_power = float(np.sum( self.consumed_power_per_ap))
+        # FA positions are FIXED.
+        # Only SIM phase changes
+        self.B_l = (self.calculate_sim_transfer_matrix(self.phase_shift_matrix))
+        # Effective channel
+        self.h_user = (self.get_channel())
 
-        # Total transmitted power
-        self.consumed_power_per_ap = np.sum(
-            self.allocated_powers,
-            axis=1
-        )
-
-        self.consumed_power = np.sum(
-            self.consumed_power_per_ap
-        )
-
-        # FA positions are fixed
-        # Therefore H_l does NOT need
-        # to be recalculated here.
-
-        # SIM phase changes
-        self.B_l = (
-            self.calculate_sim_transfer_matrix(
-                self.phase_shift_matrix
-            )
-        )
-
-        # Equivalent channel
-        self.h_user = self.get_channel()
-
-        observation = self._get_obs(
-            h_user=self.h_user
-        )
-
+        # Rates
         (
             self.user_sinr,
             self.user_data_rates,
             total_data_rates
         ) = self._calculate_rates()
 
-        # No FA feasibility penalty anymore
+        # Observation after action
+        observation = self._get_obs(
+            self.h_user
+        )
+
+        # No FA penalty because FA is fixed
+        # and has already been validated.
         self.reward = float(
             total_data_rates
         )
-
         terminated = False
-
-        truncated = (
-            self.current_step
-            >= self.max_episode_steps
-        )
-
+        truncated = (self.current_step>= self.max_episode_steps)
         info = self._get_info()
 
-        return (
-            observation,
-            self.reward,
-            terminated,
-            truncated,
-            info
-        )
+        return (observation, self.reward, terminated, truncated, info)
     
     def reset(self, seed: Optional[int] = None, options: Optional[dict] = None):
         super().reset(seed=seed)
-
         self.current_step = 0
         self.reward = 0.0
         self.consumed_power = 0.0
         self.user_sinr = None
         self.user_data_rates = None
-
-        # Fixed FA positions
+                
+        # FIXED FA positions
+        # Never generate new FA ports here.
         self.FA_position = (self.initial_FA_position.copy())
-
-        # H_l is fixed because FA positions are fixed
-        self.H_l = (self.calculate_path_between_ap_sim(self.FA_position,self.element_position_matrix))
-
-        # New SIM-to-UE fading realization
+        self.FA_port_indices = (self.initial_FA_port_indices.copy())
         self.h_sim_ue = (self._generate_sim_user_channel(rng=self.np_random))
 
-        # Initial random SIM phases
+        # Initial random SIM phase
         self.phase_shift_matrix = (
             self.np_random.uniform(
-                low=0.0,
-                high=2.0 * np.pi,
+                low=0.0, high=2.0 * np.pi,
                 size=(
                     self.ap_nums,
                     self.layer_nums,
@@ -533,10 +569,9 @@ class overallEnv(gym.Env):
             )
         )
 
-        self.B_l = (self.calculate_sim_transfer_matrix(self.phase_shift_matrix))
-        self.h_user = self.get_channel()
-        observation = self._get_obs(h_user=self.h_user)
-
+        self.B_l = (self.calculate_sim_transfer_matrix( self.phase_shift_matrix))
+        self.h_user = (self.get_channel())
+        observation = self._get_obs(self.h_user)
         info = self._get_info()
 
-        return observation, info
+        return (observation, info)

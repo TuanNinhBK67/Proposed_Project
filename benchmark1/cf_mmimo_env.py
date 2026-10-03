@@ -18,7 +18,9 @@ class overallEnv(gym.Env):
                  user_equipment_nums : int = 3, 
                  layer_nums : int = 2, 
                  num_elements_side : int = 3, #--> total_elements_side
-                 FA_region_size_factor: float = 4.0, #A = FA_region_size_factor * self.light_lambda
+                 FA_region_size_factor: float = 2.0, #A = FA_region_size_factor * self.light_lambda
+                 num_possible_position_horizontal: int = 4,
+                 num_possible_position_vertical: int = 5,
                  frequency_hz : float = 28e9,
                  bandwidth_hz : float = 10e6,
                  area_size : float = 200.0,
@@ -39,6 +41,8 @@ class overallEnv(gym.Env):
         self.layer_nums = layer_nums
         self.num_elements_side = num_elements_side
         self.total_element_per_layers = self.num_elements_side ** 2
+        self.num_possible_position_horizontal = num_possible_position_horizontal
+        self.num_possible_position_vertical = num_possible_position_vertical
         self.frequency_hz = frequency_hz
         self.bandwidth_hz = bandwidth_hz
         self.area_size = area_size
@@ -95,7 +99,7 @@ class overallEnv(gym.Env):
         #Action space : 
         self.power_action_dim = 0
         self.phase_action_dim = (self.ap_nums * self.layer_nums * self.total_element_per_layers) # SIM phase shifts phi_{l,m,n}
-        self.fa_action_dim = (2 * self.ap_nums * self.antenna_nums) # FA positions (x_{l,u}, y_{l,u})
+        self.fa_action_dim = (self.ap_nums * self.antenna_nums) # FA positions (x_{l,u}, y_{l,u})
         self.action_dim = (self.phase_action_dim + self.fa_action_dim)
         
         self.phase_action_start = 0
@@ -124,7 +128,12 @@ class overallEnv(gym.Env):
         self.FA_region_size_factor = FA_region_size_factor 
         self.FA_region_size = self.FA_region_size_factor * self.light_lambda # (x, y) in (-FA_region_size / 2, FA_region_size)
         self.FA_min_distance = 0.5 * self.light_lambda #Minimum Distance between pair of FA (D)
+        self.available_fa_ports = self.generate_available_fa_ports()
+        self.num_available_fa_ports = self.available_fa_ports.shape[0]
+        
+        # Deterministic, well-separated initial port assignment.
         base_fa_position = self.initialize_fa_positions() #(L, U, 2)
+        
         self.initial_FA_position = np.repeat(
             base_fa_position[None, :, :],
             self.ap_nums,
@@ -163,24 +172,37 @@ class overallEnv(gym.Env):
         self.w_t, self.corr_t = self._calculate_transmission_matrix()
         self.h_sim_ue = self._generate_sim_user_channel()
     
+    def generate_available_fa_ports(self):
+        A = self.FA_region_size
+        Nx = self.num_possible_position_horizontal
+        Ny = self.num_possible_position_vertical
+
+        if Nx == 1:
+            x_coordinates = np.array([0.0], dtype=np.float64)
+        else:
+            x_coordinates = np.linspace(-A / 2.0, A / 2.0, Nx)
+
+        if Ny == 1:
+            y_coordinates = np.array([0.0], dtype=np.float64)
+        else:
+            y_coordinates = np.linspace(-A / 2.0, A / 2.0, Ny)
+
+        x_grid, y_grid = np.meshgrid(x_coordinates, y_coordinates, indexing="xy")
+        ports = np.stack([x_grid.ravel(), y_grid.ravel()], axis=1)
+        return ports.astype(np.float64)
+    
     def initialize_fa_positions(self):
         U = self.antenna_nums
-        A = self.FA_region_size
-        D_min = self.FA_min_distance
+        ports = self.available_fa_ports
+        num_ports = ports.shape[0]
 
-        # Number of grid points along each dimension
-        n_side = int(np.ceil(np.sqrt(U)))
-        if n_side == 1:
-            coordinates = np.array([0.0])
-        else:
-            spacing = A / (n_side - 1)
-            coordinates = np.linspace(-A / 2.0, A / 2.0, n_side)
-        x_grid, y_grid = np.meshgrid(coordinates, coordinates, indexing="xy")
-        positions = np.stack([x_grid.ravel(), y_grid.ravel()], axis=1)
-        # Keep only U antenna positions
-        positions = positions[:U]
-        # Return shape: (2, U)
-        return positions.T.astype(np.float64)    
+        # Choose approximately evenly distributed initial ports
+        selected_indices = np.linspace(0, num_ports - 1, U, dtype=int)
+        selected_positions = ports[selected_indices]
+
+        # selected_positions: (U, 2)
+        # Need return shape: (2, U)
+        return selected_positions.T.copy()  
     
     def check_fa_feasibility(self, fa_positions: np.ndarray):
         L = self.ap_nums
@@ -420,11 +442,23 @@ class overallEnv(gym.Env):
         phase_action = phase_action.reshape(L, M, N)
         phase_shift_matrix = (np.pi * (phase_action + 1.0)) # Map [-1, 1] -> [0, 2*pi)
         phase_shift_matrix = np.mod(phase_shift_matrix, 2.0 * np.pi)
-
+        
         #Fa position action
         fa_action = action[self.fa_action_start:self.fa_action_end]
-        fa_action = fa_action.reshape(L, 2, U)
-        fa_positions = (self.FA_region_size / 2.0) * fa_action # Map [-1,1] -> [-FA_region_size/2, FA_region_size/2]
+        fa_action = fa_action.reshape(L, U)
+        num_ports = self.num_available_fa_ports
+                
+        #Map [-1, 1] --> [0, num_ports - 1]
+        normalized = (fa_action + 1.0) / 2.0
+        port_indices = np.rint(normalized * (num_ports - 1)).astype(np.int64)
+        port_indices = np.clip(port_indices, 0, num_ports - 1)
+        
+        # FA positions q = round [(a + 1) / 2 * (Np - 1)]
+        fa_positions = np.zeros((L, 2, U), dtype=np.float64)
+        for l in range(L):
+            for u in range(U):
+                port_idx = port_indices[l, u]
+                fa_positions[l, :, u] = (self.available_fa_ports[port_idx])
 
         return (phase_shift_matrix, fa_positions)
 
