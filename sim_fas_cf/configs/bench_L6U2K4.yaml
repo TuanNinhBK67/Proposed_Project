@@ -1,0 +1,93 @@
+# Convergence benchmark L=6, U=2, K=4 (T=50, delta=0, 3M steps), geometry/SIM/noise of Shi et al. arXiv:2409.12870.
+# Illustrative development values (NOT settings or results of the manuscript). Every value the manuscript
+# leaves open is listed in docs/ASSUMPTIONS.md.
+seed: 42
+device: auto
+system:
+  L: 6
+  U: 2
+  K: 4
+  M: 2
+  N: 25                    # 5 x 5 meta-atoms per layer (Shi et al. arXiv:2409.12870)
+  Nx: 4
+  Ny: 4
+  nk: [2, 2, 2, 2]
+  Wx: 2.0                  # FAS aperture 2 lambda x 2 lambda
+  Wy: 2.0
+  carrier_ghz: 28.0
+  p_max_dbm: 23.0103        # 200 mW per AP (Shi et al.)
+  noise_dbm: -104.0         # -174 dBm/Hz + 10 log10(10 MHz) (Shi et al.)
+  min_se: [0.5, 0.5, 0.5, 0.5]
+  area_m: [200.0, 200.0]   # Shi et al.
+  ap_height_m: 15.0
+  ue_height_m: 1.65
+  meta_atom_spacing_lambda: 0.5
+  sim_interlayer_spacing_lambda: 2.5        # T_SIM / M = 5 lambda / 2 (Shi et al.)
+  feed_to_first_layer_spacing_lambda: 2.5   # same as the layer spacing (assumption)
+  feed_spacing_lambda: 0.5
+  sim_corr_model: identity
+  pathloss_model: log_distance
+  pl_exponent: 3.19
+  shadowing_std_db: 8.2
+env:
+  episode_steps: 20       # user, 2026-10-30 (T=20 vs 50 probe: same held-out)
+  qos_penalty: 5.0
+  power_map: linear        # p = P_max (a+1)/2 per feed, scaled down to P_max if the AP sum exceeds it (unused power allowed)
+  port_gain_obs: false     # off: original model, ports learned from the obs only (user, 2026-10-30)
+  complex_dtype: complex64
+  channel_encoding: raw_snr   # CSI = real, imag of Hbar sqrt(Pmax/sigma2) only (user, 2026-10-30)
+  phase_encoding: raw        # SIM phases as phi / 2 pi in obs and state (user)
+  obs_ctrl_mask: true        # needed again: with obs_ports_scope served the port block no longer implies it
+  obs_ports_scope: served    # active ports of every UE an AP serves (shared among serving APs) (user, 2026-10-30)
+  obs_qos: false             # QoS shortfall only in the critic state (user)
+  state_distance: false      # no D / D_max in the state (user)
+  state_time: false          # no t / T in the state (user, 2026-11-04)
+  obs_conn_flag: false       # no connection flags: zero CSI marks the unserved UEs (user)
+  obs_ue_scope: connected  # AP actors only see their CSI to the UEs they serve (F_l); "all" = every UE (ablation)
+ppo:
+  shared_actor: true
+  discount: 0.0            # delta: fixed channel -> r_t depends on a_t only (see docs/ASSUMPTIONS.md)
+  gae_lambda: 0.95
+  clip: 0.2
+  ppo_epochs: 5
+  rollout_steps: 64
+  minibatch_size: 512
+  num_envs: 32
+  target_kl: 0.02
+  hidden: [256, 256]
+  actor_lr: 3.0e-4
+  critic_lr: 3.0e-4
+  entropy_coef_power: 0.0
+  entropy_coef_phase: 0.0
+  entropy_coef_fas: 0.01
+  value_coef: 0.5
+  max_grad_norm: 0.5
+  init_log_std: -0.5
+  std_schedule: none       # Gaussian std of power/phase learned from init_log_std (user, 2026-10-30)
+  final_std: 0.05
+  fas_head: flat           # original model: one linear K*Np port head on the trunk (user, 2026-10-30)
+  fas_head_hidden: 128
+offpolicy:
+  num_envs: 4
+  hidden: [256, 256]
+  actor_lr: 1.0e-4
+  critic_lr: 3.0e-4
+  discount: 0.0
+  tau: 0.005
+  batch_size: 256
+  buffer_size: 100000
+  warmup_steps: 5000
+  gradient_steps: 4
+  expl_noise: 0.1
+  target_noise: 0.2
+  noise_clip: 0.5
+  policy_delay: 2
+  power_scale: 3.0
+  reward_scale: 0.1
+training:
+  total_env_steps: 3000000
+  eval_interval: 10000
+  eval_episodes: 128
+  plot_interval_s: 300     # each run redraws <out>/figures/convergence_sumrate.{png,pdf,csv} this often (0 = off)
+  best_metric: final_reward
+  out_dir: runs

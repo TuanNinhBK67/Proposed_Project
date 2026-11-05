@@ -1,0 +1,47 @@
+seed: 42
+device: auto
+
+system:
+  # Mạng
+  L: 3
+  U: 5
+  K: 10
+  M: 2
+  N: 25                    # 5 x 5 meta-atoms per layer (Shi et al. arXiv:2409.12870)
+
+  # FAS
+  Nx: 4
+  Ny: 4
+  nk: 2                    # số port bật, dùng chung cho mọi UE
+  Wx: 2.0                  # FAS aperture 2 lambda x 2 lambda
+  Wy: 2.0
+
+  # Công suất, nhiễu, QoS
+  carrier_ghz: 28.0
+  p_max_dbm: 23.0103       # 200 mW per AP (Shi et al.)
+  noise_dbm: -104.0        # -174 dBm/Hz + 10 log10(10 MHz) (Shi et al.)
+  min_se: 0.5              # R_min [bit/s/Hz], dùng chung cho mọi UE
+
+  # Triển khai
+  area_m: [200.0, 200.0]   # Shi et al.
+  ap_height_m: 15.0
+  ue_height_m: 1.65
+  ue_margin_m: 5.0         # UE phân bố đều trong vùng, cách biên 5 m
+
+  # SIM và antenna
+  meta_atom_spacing_lambda: 0.5
+  sim_interlayer_spacing_lambda: 2.5        # T_SIM / M = 5 lambda / 2 (Shi et al.)
+  feed_to_first_layer_spacing_lambda: 2.5   # same as the layer spacing (assumption)
+  feed_spacing_lambda: 0.5
+  sim_corr_model: identity
+
+  # Large-scale fading: three-slope (Ngo et al. 2017, d tính theo km)
+  pl_const_db: -140.7
+  d0_m: 10.0
+  d1_m: 50.0
+  shadowing_std_db: 8.2
+
+env:
+  episode_steps: 50        # T: số bước của một kênh cố định
+  qos_penalty: 5.0         # lambda trong reward
+  complex_dtype: complex64

@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "simfas"
+version = "0.1.0"
+description = "SIM-FAS-aided cell-free massive MIMO: physical model, AP-centric MAPPO and PPO/DDPG/TD3/random baselines"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.24", "torch>=2.1", "pyyaml>=6.0", "matplotlib>=3.7"]
+
+[project.optional-dependencies]
+test = ["pytest>=7", "scipy>=1.10"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

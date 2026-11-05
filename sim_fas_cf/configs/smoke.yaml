@@ -1,0 +1,35 @@
+# Tiny deterministic smoke configuration (tests / pipeline checks only).
+seed: 0
+device: cpu
+system:
+  L: 2
+  U: 2
+  K: 3
+  M: 2
+  N: 4
+  Nx: 3
+  Ny: 2
+  nk: [2, 1, 3]
+  min_se: 0.5
+  area_m: [60.0, 60.0]
+env:
+  episode_steps: 4
+  complex_dtype: complex64
+ppo:
+  num_envs: 4
+  rollout_steps: 8
+  minibatch_size: 16
+  ppo_epochs: 2
+  hidden: [32, 32]
+offpolicy:
+  num_envs: 4
+  hidden: [32, 32]
+  batch_size: 16
+  buffer_size: 2000
+  warmup_steps: 64
+  gradient_steps: 1
+training:
+  total_env_steps: 256
+  eval_interval: 128
+  eval_episodes: 4
+  out_dir: runs/smoke
